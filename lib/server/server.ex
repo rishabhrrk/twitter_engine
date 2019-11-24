@@ -41,7 +41,7 @@ defmodule TwitterEngine.Server do
   end
 
   # send back notifications of a user
-  def handle_call({:subscriber_list, user_id}, _from, state) do
+  def handle_call({:get_notifications, user_id}, _from, state) do
     user = GenServer.call(TwitterEngine.Server, {:fetch_user, user_id})
     notifications = Map.get(user, :notifications)
     {:reply, notifications, state}
@@ -72,6 +72,20 @@ defmodule TwitterEngine.Server do
     user_tweets = [hash_function] ++ user_tweets
     user = Map.put(user, :tweets, user_tweets)
     user_map = Map.put(user_map, user_id, user)
+    state = Map.put(state, :users, user_map)
+    {:reply, :ok, state}
+  end
+
+  # subrscribe to a user
+  def handle_call({:subscription_request, user_id, [celebrity]}, _from, state) do
+    user_map = Map.get(state, :users)
+    celebrity_map = Map.get(user_map, celebrity)
+    celebrity_subscriber_list = Map.get(celebrity_map, :subscribers)
+
+    celebrity_subscriber_list = [user_id] ++ celebrity_subscriber_list
+
+    celebrity_map = Map.put(celebrity_map, :subscribers, celebrity_subscriber_list)
+    user_map = Map.put(user_map, celebrity, celebrity_map)
     state = Map.put(state, :users, user_map)
     {:reply, :ok, state}
   end
