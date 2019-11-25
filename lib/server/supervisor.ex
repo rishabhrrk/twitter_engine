@@ -3,8 +3,10 @@ defmodule TwitterEngine.Server.Supervisor do
     users: %{
       "User": %{
         subscribers: [],
+        subscriptions: [],
         notifications: [],
-        tweets: []
+        tweets: [],
+        active: false
       }
     }
       ,
@@ -15,6 +17,16 @@ defmodule TwitterEngine.Server.Supervisor do
         is_archived: false,
         hashtags: [],
         tagged_users: []
+      }
+    },
+    hashtags: %{
+      "hashtag": []
+    },
+    notifications: %{
+      id: %{
+        type: retweet|hashtag|mention|followed
+        tweet: tweet_id
+        owner: owner_id
       }
     }
   }

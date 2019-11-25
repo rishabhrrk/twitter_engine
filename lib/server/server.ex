@@ -12,81 +12,123 @@ defmodule TwitterEngine.Server do
     {:ok, init_arg}
   end
 
-  # create entry in user ets table
+  # return the state to caller
+  def handle_call({:get_state}, _from, state) do
+    {:reply, state, state}
+  end
+
+  # set the state sent by the caller
+  def handle_call({:set_state, new_state}, _from, state) do
+    {:reply, :ok, new_state}
+  end
+
+  # check if the user is active
+  def handle_call({:user_alive, user_id}, _from, state) do
+    user = GenServer.call(TwitterEngine.Server, {:fetch_user, user_id})
+    active_flag = Map.get(user, :active)
+    {:reply, active_flag, state}
+  end
+
+  # create a user
   def handle_call({:create_account, user_id}, _from, state) do
-    new_user = %{
-      subscribers: [],
-      notifications: [],
-      tweets: []
-    }
-    user_map = Map.get(state, :users)
-    user_map = Map.put(user_map, user_id, new_user)
-    state = Map.put(state, :users, user_map)
+    TwitterEngine.Server.Models.User.create(user_id)
     {:reply, :ok, state}
   end
 
-  # fetch a particular user from the server user map
-  def handle_call({:fetch_user, user_id}, _from, state) do
-    user = Map.get(state, :users)
-      |> Map.get(user_id)
+  # delete a user
+  def handle_call({:delete_account, user_id}, _from, state) do
+    # make account as inactive
+    TwitterEngine.Server.Models.User.delete(user_id)
+
+    # archive tweets
+    tweet_list = TwitterEngine.Server.Models.User.query(user_id, "tweets")
+
+    Enum.each(tweet_list, fn tweet_id ->
+      TwitterEngine.Server.Models.Tweet.delete(tweet_id)
     end)
-    {:reply, user, state}
+
+    # remove user from subscriber's list of all celebrities
+    celebrity_list = TwitterEngine.Server.Models.User.query(user_id, "subscriptions")
+
+    Enum.each(celebrity_list, fn celebrity_id ->
+      TwitterEngine.Server.Models.Tweet.delete_fromList(celebrity_id, "subscribers", user_id)
+    end)
+
+    {:reply, :ok, state}
   end
 
   # send back subscriber's list of a user
   def handle_call({:subscriber_list, user_id}, _from, state) do
-    user = GenServer.call(TwitterEngine.Server, {:fetch_user, user_id})
-    subscriber_list = Map.get(user, :subscribers)
+    subscriber_list = TwitterEngine.Server.Models.User.query(user_id, "subscribers")
     {:reply, subscriber_list, state}
   end
 
   # send back notifications of a user
   def handle_call({:get_notifications, user_id}, _from, state) do
-    user = GenServer.call(TwitterEngine.Server, {:fetch_user, user_id})
-    notifications = Map.get(user, :notifications)
+    notifications = TwitterEngine.Server.Models.User.query(user_id, "notifications"))
+      |> Enum.map(fn id -> [TwitterEngine.Server.Models.Notification.get(id)] end)
+
     {:reply, notifications, state}
   end
 
   # create a new tweet for a user
   def handle_call({:create_tweet, user_id, tweet}, _from, state) do
-    hashtags = String.split(tweet, " ")
-    |> Enum.filter(fn n -> String.at(n,0)=="#" end)
-    tagged_users = String.split(tweet, " ")
-    |> Enum.filter(fn n -> String.at(n,0)=="@" end)
+    # create new tweet
+    tweet_id = TwitterEngine.Server.Models.Tweet.create(user_id, tweet)
 
-    new_tweet = %{
-      user_id: user_id
-      content: tweet,
-      is_archived: false,
-      hashtags: hashtags,
-      tagged_users: tagged_users
-    }
-    all_tweets = Map.get(state, :tweets)
-    hash_function = :crypto.hash(:md5, tweet) |> Base.encode16()
-    all_tweets = Map.put(all_tweets, hash_function, new_tweet)
-    state = Map.put(state, :tweets, all_tweets)
+    # add tweet_id to user's tweet list
+    TwitterEngine.Server.Models.User.add_toList(user_id, "tweets", tweet_id)
 
-    user_map = Map.get(state, :users)
-    user = Map.get(user_map, user_id)
-    user_tweets = Map.get(user, :tweets)
-    user_tweets = [hash_function] ++ user_tweets
-    user = Map.put(user, :tweets, user_tweets)
-    user_map = Map.put(user_map, user_id, user)
-    state = Map.put(state, :users, user_map)
+    # send tweet to all its subscribers
+    notification_id =
+      TwitterEngine.Server.Models.Notification.create("followed", tweet_id, user_id)
+
+    subscriber_list = TwitterEngine.Server.Models.User.query(user_id, "subscribers")
+
+    Enum.each(subscriber_list, fn subscriber ->
+      TwitterEngine.Server.Models.User.add_toList(subscriber, "notifications", notification_id)
+    end)
+
+    # send tweet to all tagged persons
+    notification_id =
+      TwitterEngine.Server.Models.Notification.create("mention", tweet_id, user_id)
+
+    tagged_users = TwitterEngine.Server.Models.Tweet.query(tweet_id, "tagged_users")
+
+    Enum.each(tagged_users, fn tag ->
+      TwitterEngine.Server.Models.User.add_toList(tag, "notifications", notification_id)
+    end)
+
+    # send tweet to all people following hashtags
+    notification_id =
+      TwitterEngine.Server.Models.Notification.create("hashtag", tweet_id, user_id)
+
+    hashtags = TwitterEngine.Server.Models.Tweet.query(tweet_id, "hashtags")
+
+    Enum.each(hashtags, fn tag ->
+      TwitterEngine.Server.Models.Hashtags.get(tag)
+      |> Enum.each(fn follower ->
+        TwitterEngine.Server.Models.User.add_toList(follower, "notifications", notification_id)
+      end)
+    end)
+
     {:reply, :ok, state}
   end
 
   # subrscribe to a user
-  def handle_call({:subscription_request, user_id, [celebrity]}, _from, state) do
-    user_map = Map.get(state, :users)
-    celebrity_map = Map.get(user_map, celebrity)
-    celebrity_subscriber_list = Map.get(celebrity_map, :subscribers)
+  def handle_call({:subscription_request, user_id, celebrity}, _from, state) do
+    # add user to subscriber list of celebrity
+    TwitterEngine.Server.Models.User.add_toList(celebrity, "subscribers", user_id)
 
-    celebrity_subscriber_list = [user_id] ++ celebrity_subscriber_list
+    # add celebrity to subscription list of user
+    TwitterEngine.Server.Models.User.add_toList(user_id, "subscription", celebrity)
+    {:reply, :ok, state}
+  end
 
-    celebrity_map = Map.put(celebrity_map, :subscribers, celebrity_subscriber_list)
-    user_map = Map.put(user_map, celebrity, celebrity_map)
-    state = Map.put(state, :users, user_map)
+  # subrscribe to a hashtag
+  def handle_call({:subscribe_hashtag, user_id, hashtag}, _from, state) do
+    # add user to hashtag's user list
+    TwitterEngine.Server.Models.Hashtags.add_toList(hashtag, user_id)
     {:reply, :ok, state}
   end
 end
