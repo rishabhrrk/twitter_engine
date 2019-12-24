@@ -1,82 +1,102 @@
 defmodule TwitterEngine.Server.Models.Tweet do
-  def get_all() do
+
+  alias TwitterEngine.Server.DB, as: DB
+  alias TwitterEngine.Server.Models.User, as: User
+  alias TwitterEngine.Server.Models.Tweet, as: Tweet
+  alias TwitterEngine.Server.Models.Hashtag, as: Hashtag
+
+  @schema %{
+    user_id: nil,
+    content: "",
+    is_archived: false
+  }
+
+  def get_all do
+    DB.get_all(:tweets)
   end
 
-  # fetch tweet map by tweet_id
   def get(id) do
-    state = TwitterEngine.Server.DB.get()
-
-    tweet_map =
-      Map.get(state, :tweets)
-      |> Map.get(tweet_map, id)
-
-    tweet_map
+    DB.get(:tweets, id)
   end
 
   # create a new tweet
-  def create(user_id, tweet) do
-    hashtags = String.split(tweet, " ")
-    |> Enum.filter(fn n -> String.at(n,0)=="#" end)
-    tagged_users = String.split(tweet, " ")
-    |> Enum.filter(fn n -> String.at(n,0)=="@" end)
-    |> Enum.map(fn g -> String.trim(g,"@") end)
+  def new(%{content: content}, user_id) do
+    if not Enum.member?(Map.keys(User.get_all()), user_id) do
+      {:error, "User #{user_id} does not exist"}
 
-    # add hashtags to the hashtag map unless it is already present
-    Enum.each(hashtags, fn hashtag ->
-      if(length(TwitterEngine.Server.Models.Hashtags.get(hashtag))==0) do
-        TwitterEngine.Server.Models.Hashtags.create(hashtag)
+    else
+
+      tweet = @schema
+      tweet = Map.put(tweet, :user_id, user_id)
+      tweet = Map.put(tweet, :content, content)
+
+      # Get tagged users from the tweet content
+      mentions =
+        String.split(content, " ")
+        |> Enum.filter(fn w -> String.at(w, 0) == "@" end)
+        |> Enum.map(fn u -> String.trim(u, "@") end)
+
+      # Convert PID strings to PID
+      mentions = Enum.map(mentions, fn m ->
+        if String.match?(m, ~r/#PID<.*>/) do
+          String.trim(m, "#PID") |> to_charlist |> :erlang.list_to_pid
+        else
+          m
+        end
+      end)
+
+      tweet = Map.put(tweet, :mentions, mentions)
+
+      tweet_id = TwitterEngine.Server.Helper.random_key()
+
+      {:ok, tweet_id} = DB.add(:tweets, tweet_id, tweet)
+      {:ok, _user_id, _tweet_id} = DB.add_relationship(:users, user_id, :tweets, tweet_id)
+
+      # Get hashtags from the tweet content
+      String.split(content, " ")
+      |> Enum.filter(fn h -> String.at(h, 0) == "#" end)
+      |> Enum.each(fn h ->
+        unless Hashtag.exist?(h) do
+          Hashtag.new(h)
+        end
+
+        Hashtag.add_tweet(h, tweet_id)
+      end)
+
+      # Send notifications
+
+      # 1. To all the mentioned users
+      Enum.each mentions, fn m ->
+        notification = "You were mentioned in the tweet '#{content}' by #{inspect user_id}"
+        GenServer.cast {:global, :server}, {:send_notification, m, notification}
       end
-    end)
 
-    # add new tweet
-    new_tweet = %{
-      user_id: user_id
-      content: tweet,
-      is_archived: false,
-      hashtags: hashtags,
-      tagged_users: tagged_users
+      # 2. To all the tweeter's subscribers
+      subscribers = Map.get User.get(user_id), :subscribers
+      Enum.each subscribers, fn s ->
+        notification = "User #{inspect user_id} tweeted '#{content}'. You received this message because you follow @#{inspect user_id}"
+        GenServer.cast {:global, :server}, {:send_notification, s, notification}
+      end
+
+      {:ok, tweet_id}
+    end
+  end
+
+  def retweet(tweet_to_retweet, user_id) do
+    tweet_to_retweet = Tweet.get(tweet_to_retweet)
+    content = Map.get(tweet_to_retweet, :content)
+    owner = Map.get(tweet_to_retweet, :user_id)
+
+    tweet = %{
+      content: "RT: " <> content
     }
-    state = TwitterEngine.Server.DB.get()
-    all_tweets = Map.get(state, :tweets)
-    tweet_id = :crypto.hash(:md5, tweet) |> Base.encode16()
-    all_tweets = Map.put(all_tweets, tweet_id, new_tweet)
-    state = Map.put(state, :tweets, all_tweets)
-    TwitterEngine.Server.DB.put(state)
-    tweet_id
-  end
 
-  # delete a tweet by tweet id
-  def delete(id) do
-    state = TwitterEngine.Server.DB.get()
-    all_tweets = Map.get(state, :tweets)
-    tweet = Map.get(all_tweets, id)
-    tweet = Map.put(tweet, :is_archived, false)
-    all_tweets = Map.put(all_tweets, id, tweet)
-    state = Map.put(state, :tweets, all_tweets)
-    TwitterEngine.Server.DB.put(state)
-  end
+    {:ok, tweet_id} = Tweet.new(tweet, user_id)
 
-  # can fetch lists - hashtags, tagged_users
-  def query(tweet_id, list_name) do
-    tweet_map = TwitterEngine.Server.Models.Tweet.get(tweet_id)
-    list_struct = Map.get(tweet_map, String.to_atom(list_name))
-    list_struct
-  end
+    # Send a notification to the owner
+    notification = "Your tweet '#{content}' was retweeted by #{inspect user_id}"
+    GenServer.cast {:global, :server}, {:send_notification, owner, notification}
 
-  # this will add element to tweet's list - hashtags, tagged_users
-  def add_toList(tweet_id, list_name, element) do
-    tweet_map = TwitterEngine.Server.Models.Tweet.get(tweet_id)
-    list_struct = Map.get(user_map, String.to_atom(list_name))
-    list_struct = [element] ++ list_struct
-    tweet_map = Map.put(tweet_map, String.to_atom(list_name), list_struct)
-    TwitterEngine.Server.Models.Tweet.update(tweet_id, tweet_map)
-  end
-
-  # this will delete element from tweet's list - hashtags, tagged_users
-  def delete_fromList(tweet_id, list_name, element) do
-    tweet_map = TwitterEngine.Server.Models.Tweet.get(tweet_id)
-    list_struct = Map.get(tweet_map, String.to_atom(list_name)) |> List.delete(element)
-    tweet_map = Map.put(tweet_map, String.to_atom(list_name), list_struct)
-    TwitterEngine.Server.Models.Tweet.update(tweet_id, tweet_map)
+    {:ok, tweet_id}
   end
 end

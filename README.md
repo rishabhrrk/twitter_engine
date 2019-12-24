@@ -26,3 +26,9 @@ In part I, implement the following functionalities:
    When you submit the project, make sure you include a README that explains what
    functionality is implemented, how to run the tests, etc. You need to submit a report
    with performance analysis.
+
+## Important
+
+```
+$ epmd -daemon
+```

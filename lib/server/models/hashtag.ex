@@ -1,47 +1,45 @@
-defmodule TwitterEngine.Server.Models.Hashtags do
-  def get_all() do
+defmodule TwitterEngine.Server.Models.Hashtag do
+
+  @schema %{
+    tweets: [],
+    subscribers: []
+  }
+
+  def new(hashtag) do
+    TwitterEngine.Server.DB.add(:hashtags, hashtag, @schema)
   end
 
-  # this will return the user list of a given hashtag
   def get(hashtag) do
-    state = TwitterEngine.Server.DB.get()
-
-    hashtags_list =
-      Map.get(state, :hashtags)
-      |> Map.get(hashtag)
-
-    hashtags_list
+    TwitterEngine.Server.DB.get(:hashtags, hashtag)
   end
 
-  # this will create a new hasthtag with empty list
-  def create(hashtag) do
-    new_hashtag = []
-    state = TwitterEngine.Server.DB.get()
-    all_hashtags = Map.get(state, :hashtags)
-    all_hashtags = Map.put(all_hashtags, hashtag, new_hashtag)
-    state = Map.put(state, :hashtags, all_hashtags)
-    TwitterEngine.Server.DB.put(state)
+  def get_all do
+    TwitterEngine.Server.DB.get_all(:hashtags)
   end
 
-  # this will update hashtag with the hashtag_list
-  def update(hashtag, hashtag_list) do
-    state = TwitterEngine.Server.Models.DB.get()
-    all_hashtags = Map.get(state, :hashtags)
-    all_hashtags = Map.put(all_hashtags, hashtag, hashtag_list)
-    state = Map.put(state, :hashtags, all_hashtags)
-    TwitterEngine.Server.DB.put(state)
+  def exist?(hashtag) do
+    all_hashtags = Map.keys TwitterEngine.Server.DB.get_all(:hashtags)
+    Enum.member? all_hashtags, hashtag
   end
 
-  # this will add element to hashtag's list
-  def add_toList(hashtag, user_id) do
-    hashtag_list = TwitterEngine.Server.Models.Hashtags.get(hashtag)
-    hashtag_list = [user_id] ++ hashtag_list
-    TwitterEngine.Server.Models.Hashtags.update(hashtag, hashtag_list)
+  def add_tweet(hashtag, tweet_id) do
+    TwitterEngine.Server.DB.add_relationship(:hashtags, hashtag, :tweets, tweet_id)
+
+    # Send a notification to all subscribers
+    subscribers = Map.get(TwitterEngine.Server.Models.Hashtag.get(hashtag), :subscribers)
+
+    tweet = TwitterEngine.Server.Models.Tweet.get(tweet_id)
+    user_id = Map.get(tweet, :user_id)
+    content = Map.get(tweet, :content)
+
+    Enum.each subscribers, fn s ->
+      notification = "User #{inspect user_id} tweeted '#{content}'. You received this message because you follow #{hashtag}"
+      GenServer.cast {:global, :server}, {:send_notification, s, notification}
+    end
   end
 
-  # this will delete element from hashtag's list
-  def delete_fromList(hashtag, user_id) do
-    hashtag_list = TwitterEngine.Server.Models.Hashtags.get(hashtag) |> List.delete(user_id)
-    TwitterEngine.Server.Models.Hashtags.update(hashtag, hashtag_list)
+  def add_subscriber(hashtag, user_id) do
+    TwitterEngine.Server.DB.add_relationship(:hashtags, hashtag, :subscribers, user_id)
   end
+
 end
